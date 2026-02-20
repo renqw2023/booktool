@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Phase 5: 系统流水线整合"""
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from models import Character, Relationship, TimelineEvent, ScriptScene, StoryboardShot
-from extractor import CharacterExtractor, RelationshipExtractor, TimelineExtractor
+from extractor import CharacterExtractor, RelationshipExtractor, TimelineExtractor, LLMClient
 from script_generator import ScriptGenerator
 from storyboard_generator import StoryboardGenerator
 
@@ -10,13 +10,19 @@ from storyboard_generator import StoryboardGenerator
 class NovelProcessor:
     """小说处理器 - 完整的自动化处理流水线"""
 
-    def __init__(self):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        """
+        初始化小说处理器
+
+        Args:
+            llm_client: LLM 客户端实例，如果为 None 则各组件会使用默认的 MockLLMClient
+        """
         # 初始化各个提取器和生成器
-        self.character_extractor = CharacterExtractor()
-        self.relationship_extractor = RelationshipExtractor()
-        self.timeline_extractor = TimelineExtractor()
-        self.script_generator = ScriptGenerator()
-        self.storyboard_generator = StoryboardGenerator()
+        self.character_extractor = CharacterExtractor(llm_client)
+        self.relationship_extractor = RelationshipExtractor(llm_client)
+        self.timeline_extractor = TimelineExtractor(llm_client)
+        self.script_generator = ScriptGenerator(llm_client)
+        self.storyboard_generator = StoryboardGenerator(llm_client)
 
     def process(self, novel_text: str) -> Dict[str, Any]:
         """

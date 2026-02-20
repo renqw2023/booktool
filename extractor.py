@@ -1,226 +1,345 @@
-"""Phase 2: 信息提取引擎 (NLU)"""
+"""Phase 2: 信息提取引擎 (NLU) - LLM 驱动版本
+
+本模块使用大语言模型进行真正的人物、关系和时间线提取。
+支持自定义 LLM 客户端，默认提供 OpenAI 兼容接口调用逻辑。
+"""
 import re
-from typing import List, Optional
+import json
+import os
+from typing import List, Optional, Dict, Any
 from models import Character, Relationship, TimelineEvent
 
 
-# 人名列表
-NAMES = ["张三", "李四", "王五", "赵六"]
+# ==================== LLM 客户端接口 ====================
 
+class LLMClient:
+    """LLM 客户端基类 - 可继承实现不同平台的调用"""
+
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
+        self.base_url = base_url or os.environ.get("LLM_BASE_URL", "")
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """发送对话请求并返回响应文本"""
+        raise NotImplementedError("子类必须实现 chat 方法")
+
+
+class MockLLMClient(LLMClient):
+    """Mock LLM 客户端 - 用于测试时无需真实 API 调用"""
+
+    def __init__(self, mock_response: str = ""):
+        super().__init__()
+        self.mock_response = mock_response
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """返回预设的 mock 响应"""
+        return self.mock_response
+
+
+class OpenAICompatibleClient(LLMClient):
+    """OpenAI 兼容 API 客户端"""
+
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: str = "gpt-4o-mini"):
+        super().__init__(api_key, base_url)
+        self.model = model
+
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+        """调用 OpenAI 兼容 API"""
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url if self.base_url else None
+            )
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature
+            )
+            return response.choices[0].message.content
+        except ImportError:
+            raise ImportError("请安装 openai 包：pip install openai")
+
+
+# ==================== Prompt 模板 ====================
+
+CHARACTER_EXTRACTION_PROMPT = """你是一个专业的文学小说分析专家。请阅读以下小说文本，提取其中出现的所有主要人物。
+
+请严格按照以下 JSON Schema 格式返回结果：
+{{
+    "characters": [
+        {{
+            "id": "char_人物姓名拼音或英文",
+            "name": "人物姓名",
+            "description": "人物简短描述（50 字以内）",
+            "traits": ["性格特点 1", "性格特点 2", ...],
+            "goals": ["目标 1", "目标 2", ...],
+            "background": "背景故事（可选）",
+            "appearance": "外貌描写（可选）"
+        }}
+    ]
+}}
+
+如果某个字段无法确定，可以用空字符串或空数组填充。
+
+小说文本：
+{text}
+
+请只返回 JSON，不要包含任何额外说明：
+"""
+
+RELATIONSHIP_EXTRACTION_PROMPT = """你是一个专业的文学小说分析专家。请阅读以下小说文本，提取其中人物之间的关系。
+
+请严格按照以下 JSON Schema 格式返回结果：
+{{
+    "relationships": [
+        {{
+            "id": "rel_人物 1_人物 2",
+            "character_id_1": "char_人物 1 姓名",
+            "character_id_2": "char_人物 2 姓名",
+            "type": "关系类型（朋友/敌人/伙伴/亲人/师徒/恋人等）",
+            "description": "关系描述",
+            "conflict_level": 0-5 的整数（0 无冲突，5 极度冲突）,
+            "strength": 0-5 的整数（关系强度）
+        }}
+    ]
+}}
+
+如果没有检测到任何人物关系，返回空数组。
+
+小说文本：
+{text}
+
+请只返回 JSON，不要包含任何额外说明：
+"""
+
+TIMELINE_EXTRACTION_PROMPT = """你是一个专业的文学小说分析专家。请阅读以下小说文本，提取其中的时间线事件。
+
+请严格按照以下 JSON Schema 格式返回结果：
+{{
+    "events": [
+        {{
+            "id": "event_ch 章节号",
+            "chapter": 章节号（整数）,
+            "summary": "事件摘要（20-50 字）",
+            "description": "事件详细描述（100 字以内，可选）",
+            "character_ids": ["char_人物 1", "char_人物 2", ...],
+            "location": "事件发生地点（可选）",
+            "timestamp": "时间戳或大致时间（可选）"
+        }}
+    ]
+}}
+
+请按章节顺序提取每个重要事件。
+
+小说文本：
+{text}
+
+请只返回 JSON，不要包含任何额外说明：
+"""
+
+
+# ==================== 提取器实现 ====================
 
 class CharacterExtractor:
-    """人物提取器"""
+    """人物提取器 - 使用 LLM 进行智能提取"""
 
-    def __init__(self):
-        pass
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        """
+        初始化人物提取器
+
+        Args:
+            llm_client: LLM 客户端实例，如果为 None 则使用 MockLLMClient
+        """
+        self.llm_client = llm_client or MockLLMClient()
 
     def extract(self, text: str) -> List[Character]:
         """从文本中提取人物"""
+        prompt = CHARACTER_EXTRACTION_PROMPT.format(text=text)
+        messages = [{"role": "user", "content": prompt}]
+
+        response = self.llm_client.chat(messages)
+        data = self._parse_json_response(response)
+
+        if not data or "characters" not in data:
+            return []
+
         characters = []
-        seen_names = set()
-
-        # 查找所有人名
-        for name in NAMES:
-            if name in text and name not in seen_names:
-                seen_names.add(name)
-
-                # 获取上下文
-                idx = text.find(name)
-                start = max(0, idx - 50)
-                end = min(len(text), idx + 100)
-                context = text[start:end]
-
-                # 提取特质
-                traits = self._extract_traits(context)
-
-                # 提取描述
-                description = self._extract_description(context, name)
-
-                char = Character(
-                    id=f"char_{name}",
-                    name=name,
-                    description=description,
-                    traits=traits
-                )
-                characters.append(char)
+        for char_data in data["characters"]:
+            character = Character(
+                id=char_data.get("id", f"char_{char_data.get('name', 'unknown')}"),
+                name=char_data.get("name", ""),
+                description=char_data.get("description", ""),
+                traits=char_data.get("traits", []),
+                goals=char_data.get("goals", []),
+                background=char_data.get("background"),
+                appearance=char_data.get("appearance")
+            )
+            characters.append(character)
 
         return characters
 
-    def _extract_traits(self, context: str) -> List[str]:
-        """从上下文中提取特质"""
-        traits = []
+    def _parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """解析 LLM 返回的 JSON 响应"""
+        # 尝试直接解析
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            pass
 
-        # 简单方法：直接查找关键词后的内容
-        # 匹配 "性格 XX" 模式
-        for keyword in ["性格", "为人"]:
-            idx = context.find(keyword)
-            if idx != -1:
-                # 获取关键词后的 2-4 个字符
-                start = idx + len(keyword)
-                end = min(start + 4, len(context))
-                trait = context[start:end].strip()
-                # 去除标点
-                for char in ".,.!?.,":
-                    trait = trait.replace(char, "")
-                if trait and len(trait) >= 1 and trait not in traits:
-                    traits.append(trait)
+        # 尝试提取代码块中的 JSON
+        match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
 
-        # 匹配 "是个 XX 的" 模式
-        for pattern in ["是个", "是一个"]:
-            idx = context.find(pattern)
-            if idx != -1:
-                start = idx + len(pattern)
-                end = context.find("的", start)
-                if end != -1 and end - start <= 6:
-                    trait = context[start:end].strip()
-                    if trait and trait not in traits:
-                        traits.append(trait)
+        # 尝试查找第一个 { 和最后一个 } 之间的内容
+        start = response.find('{')
+        end = response.rfind('}') + 1
+        if start != -1 and end > start:
+            try:
+                return json.loads(response[start:end])
+            except json.JSONDecodeError:
+                pass
 
-        return traits
-
-    def _extract_description(self, context: str, name: str) -> str:
-        """提取人物描述"""
-        # 简单返回包含名字的句子
-        sentences = re.split(r"[。.!?]", context)
-        for sentence in sentences:
-            if name in sentence:
-                return sentence.strip()
-        return ""
+        return None
 
 
 class RelationshipExtractor:
-    """关系提取器"""
+    """关系提取器 - 使用 LLM 进行智能提取"""
 
-    def __init__(self):
-        self.relationship_keywords = {
-            "朋友": ["朋友", "伙伴", "同伴", "一起", "结伴"],
-            "敌人": ["敌人", "仇敌", "仇人", "报复", "凶恶"],
-            "伙伴": ["伙伴", "同行", "一起", "结伴"],
-        }
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        self.llm_client = llm_client or MockLLMClient()
 
     def extract(self, text: str) -> List[Relationship]:
-        """从文本中提取关系"""
+        """从文本中提取人物关系"""
+        prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(text=text)
+        messages = [{"role": "user", "content": prompt}]
+
+        response = self.llm_client.chat(messages)
+        data = self._parse_json_response(response)
+
+        if not data or "relationships" not in data:
+            return []
+
         relationships = []
-
-        # 检测出现的人物
-        names = self._find_names(text)
-
-        if len(names) < 2:
-            return relationships
-
-        # 分析关系类型
-        rel_type = self._determine_relationship_type(text)
-
-        if rel_type:
-            # 简单处理：将前两个人名关联
-            rel = Relationship(
-                id=f"rel_{names[0]}_{names[1]}",
-                character_id_1=f"char_{names[0]}",
-                character_id_2=f"char_{names[1]}",
-                type=rel_type,
-                description=f"{names[0]} 和 {names[1]} 是{rel_type}关系"
+        for rel_data in data["relationships"]:
+            relationship = Relationship(
+                id=rel_data.get("id", f"rel_unknown"),
+                character_id_1=rel_data.get("character_id_1", ""),
+                character_id_2=rel_data.get("character_id_2", ""),
+                type=rel_data.get("type", "unknown"),
+                description=rel_data.get("description", ""),
+                conflict_level=rel_data.get("conflict_level", 0),
+                strength=rel_data.get("strength", 3)
             )
-            relationships.append(rel)
+            relationships.append(relationship)
 
         return relationships
 
-    def _find_names(self, text: str) -> List[str]:
-        """找出文本中的人名"""
-        result = []
-        for name in NAMES:
-            if name in text and name not in result:
-                result.append(name)
-        return result
+    def _parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """解析 LLM 返回的 JSON 响应"""
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
 
-    def _determine_relationship_type(self, text: str) -> Optional[str]:
-        """确定关系类型"""
-        for rel_type, keywords in self.relationship_keywords.items():
-            for keyword in keywords:
-                if keyword in text:
-                    return rel_type
+        start = response.find('{')
+        end = response.rfind('}') + 1
+        if start != -1 and end > start:
+            try:
+                return json.loads(response[start:end])
+            except json.JSONDecodeError:
+                pass
+
         return None
 
 
 class TimelineExtractor:
-    """时间线提取器"""
+    """时间线提取器 - 使用 LLM 进行智能提取"""
 
-    def __init__(self):
-        self.chapter_pattern = r"第 ([一二三四五六七八九十\d]+) 章"
-        self.location_keywords = ["酒馆", "小镇", "宝藏", "旅程"]
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        self.llm_client = llm_client or MockLLMClient()
 
     def extract(self, text: str) -> List[TimelineEvent]:
         """从文本中提取时间线事件"""
+        prompt = TIMELINE_EXTRACTION_PROMPT.format(text=text)
+        messages = [{"role": "user", "content": prompt}]
+
+        response = self.llm_client.chat(messages)
+        data = self._parse_json_response(response)
+
+        if not data or "events" not in data:
+            return []
+
         events = []
-
-        # 按章节分割文本
-        chapters = re.split(r"(第 [一二三四五六七八九十\d]+ 章)", text)
-
-        current_chapter = 1
-        current_title = ""
-
-        for i, chunk in enumerate(chapters):
-            if re.match(self.chapter_pattern, chunk):
-                # 这是章节标题
-                current_chapter = self._parse_chapter_number(chunk) or current_chapter
-                current_title = chunk.strip()
-            elif chunk.strip() and current_chapter:
-                # 这是章节内容 - 为每个章节创建一个事件
-                event = self._create_event_from_chunk(current_chapter, chunk, current_title)
-                if event:
-                    events.append(event)
-                # 重置 current_chapter 以防止重复添加
-                # 只在找到下一个章节标题时才更新
+        for event_data in data["events"]:
+            event = TimelineEvent(
+                id=event_data.get("id", f"event_ch{event_data.get('chapter', 'unknown')}"),
+                chapter=event_data.get("chapter", 0),
+                summary=event_data.get("summary", ""),
+                description=event_data.get("description"),
+                character_ids=event_data.get("character_ids", []),
+                location=event_data.get("location"),
+                timestamp=event_data.get("timestamp")
+            )
+            events.append(event)
 
         return events
 
-    def _parse_chapter_number(self, title: str) -> Optional[int]:
-        """解析章号"""
-        # 简单处理中文数字
-        chinese_nums = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
-                        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
-        for char in title:
-            if char in chinese_nums:
-                return chinese_nums[char]
-            elif char.isdigit():
-                return int(char)
+    def _parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """解析 LLM 返回的 JSON 响应"""
+        try:
+            return json.loads(response.strip())
+        except json.JSONDecodeError:
+            match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+        start = response.find('{')
+        end = response.rfind('}') + 1
+        if start != -1 and end > start:
+            try:
+                return json.loads(response[start:end])
+            except json.JSONDecodeError:
+                pass
+
         return None
-
-    def _create_event_from_chunk(self, chapter: int, chunk: str, title: str = "") -> Optional[TimelineEvent]:
-        """从文本块创建事件"""
-        # 提取摘要（第一句）
-        sentences = re.split(r"[。.!?]", chunk)
-        summary = sentences[0].strip()[:50] if sentences else ""
-
-        if not summary:
-            return None
-
-        # 提取地点
-        location = None
-        for loc in self.location_keywords:
-            if loc in chunk:
-                location = loc
-                break
-
-        # 提取人物
-        characters = []
-        for name in NAMES:
-            if name in chunk and name not in characters:
-                characters.append(name)
-
-        return TimelineEvent(
-            id=f"event_ch{chapter}",
-            chapter=chapter,
-            summary=summary,
-            description=chunk.strip()[:100],
-            character_ids=[f"char_{c}" for c in characters],
-            location=location
-        )
 
 
 if __name__ == "__main__":
-    # 简单测试
-    extractor = CharacterExtractor()
-    text = "张三是一个年轻的剑客，性格坚毅。"
-    chars = extractor.extract(text)
-    for char in chars:
+    # 演示用法：使用 Mock 客户端
+    mock_response = '''
+    {
+        "characters": [
+            {
+                "id": "char_harry",
+                "name": "哈利·波特",
+                "description": "著名的年轻巫师，额头上有一道闪电形伤疤",
+                "traits": ["勇敢", "忠诚", "冲动"],
+                "goals": ["打败伏地魔", "保护朋友"],
+                "background": "孤儿，11 岁时得知自己是巫师",
+                "appearance": "黑发绿眼，戴眼镜，额头有闪电伤疤"
+            }
+        ]
+    }
+    '''
+
+    client = MockLLMClient(mock_response)
+    extractor = CharacterExtractor(client)
+
+    test_text = "哈利·波特是一个年轻的巫师..."
+    characters = extractor.extract(test_text)
+
+    for char in characters:
         print(f"人物：{char.name}, 特质：{char.traits}")
