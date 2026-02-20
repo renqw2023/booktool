@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小说自动化处理系统 - UI 控制台</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Element Plus CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <!-- Element Plus -->
+    <script src="https://unpkg.com/element-plus"></script>
+
+    <!-- Axios -->
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+
+    <!-- ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+
+    <style>
+        /* 深色主题定制 */
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-color: #58a6ff;
+            --success-color: #3fb950;
+            --warning-color: #d29922;
+            --danger-color: #f85149;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        /* 卡片悬停效果 */
+        .scene-card:hover, .shot-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(88, 166, 255, 0.15);
+        }
+
+        /* 剧本场景样式 */
+        .scene-header {
+            background: linear-gradient(135deg, var(--bg-tertiary), var(--bg-secondary));
+            border-left: 3px solid var(--accent-color);
+        }
+
+        /* 分镜卡片样式 */
+        .shot-card {
+            background: linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary));
+            border: 1px solid var(--border-color);
+        }
+
+        /* 进度条动画 */
+        .progress-animate {
+            transition: width 0.5s ease-in-out;
+        }
+
+        /* Tab 内容区高度 */
+        .tab-content-height {
+            height: calc(100vh - 280px);
+            overflow-y: auto;
+        }
+
+        /* 剧本对白样式 */
+        .dialogue-bubble {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-left: 20px;
+            position: relative;
+        }
+        .dialogue-bubble::before {
+            content: '';
+            position: absolute;
+            left: -8px;
+            top: 12px;
+            border: 6px solid transparent;
+            border-right-color: var(--bg-tertiary);
+        }
+
+        /* 动作描述样式 */
+        .action-text {
+            color: var(--text-secondary);
+            font-style: italic;
+            border-left: 2px solid var(--border-color);
+            padding-left: 12px;
+        }
+
+        /* 统计卡片 */
+        .stat-card {
+            background: linear-gradient(135deg, rgba(88, 166, 255, 0.1), rgba(22, 27, 34, 0.8));
+            border: 1px solid var(--border-color);
+        }
+
+        /* ECharts 容器 */
+        #relationship-graph {
+            width: 100%;
+            height: 500px;
+        }
+
+        /* 上传区域 */
+        .upload-area {
+            border: 2px dashed var(--border-color);
+            transition: all 0.3s ease;
+        }
+        .upload-area:hover {
+            border-color: var(--accent-color);
+            background: rgba(88, 166, 255, 0.05);
+        }
+        .upload-area.is-dragover {
+            border-color: var(--accent-color);
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        /* 加载动画 */
+        .pulse-dot::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: inherit;
+            animation: pulse 2s ease-out infinite;
+        }
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(3);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="min-h-screen">
+        <!-- 顶部标题栏 -->
+        <header class="bg-[var(--bg-secondary)] border-b border-[var(--border-color)] px-6 py-4">
+            <div class="max-w-7xl mx-auto flex items-center justify-between">
+                <div class="flex items-center gap-4">
+                    <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-bold text-white">小说自动化处理系统</h1>
+                        <p class="text-sm text-[var(--text-secondary)]">从小说文本到剧本分镜的 AI 转换工作台</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <el-tag :type="apiHealth ? 'success' : 'danger'" size="small">
+                        <span class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full" :class="apiHealth ? 'bg-green-500 pulse-dot' : 'bg-red-500'"></span>
+                            {{ apiHealth ? 'API 在线' : 'API 离线' }}
+                        </span>
+                    </el-tag>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="max-w-7xl mx-auto px-6 py-8">
+            <!-- 上传区域 -->
+            <el-card class="mb-6" style="background: var(--bg-secondary); border-color: var(--border-color);">
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-white">文件上传</span>
+                        <el-tag size="small" v-if="currentTask">任务 ID: {{ currentTask.task_id }}</el-tag>
+                    </div>
+                </template>
+
+                <div
+                    class="upload-area rounded-lg p-12 text-center cursor-pointer"
+                    :class="{ 'is-dragover': isDragover }"
+                    @dragover.prevent="isDragover = true"
+                    @dragleave.prevent="isDragover = false"
+                    @drop.prevent="handleDrop"
+                    @click="$refs.fileInput.click()"
+                >
+                    <input
+                        ref="fileInput"
+                        type="file"
+                        accept=".txt"
+                        class="hidden"
+                        @change="handleFileSelect"
+                    />
+
+                    <el-icon class="text-6xl text-[var(--accent-color)] mb-4">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </el-icon>
+
+                    <p class="text-lg text-[var(--text-primary)] mb-2">
+                        {{ uploadFile ? uploadFile.name : '点击或拖拽上传小说文件' }}
+                    </p>
+                    <p class="text-sm text-[var(--text-secondary)]">
+                        支持 .txt 格式，建议文件大小不超过 10MB
+                    </p>
+
+                    <el-button
+                        v-if="uploadFile"
+                        type="primary"
+                        size="large"
+                        class="mt-6"
+                        :loading="isUploading"
+                        @click.stop="handleUpload"
+                    >
+                        {{ isUploading ? '上传中...' : '开始处理' }}
+                    </el-button>
+                </div>
+
+                <!-- 进度条 -->
+                <div v-if="currentTask && currentTask.status !== 'completed'" class="mt-6">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm text-[var(--text-secondary)]">{{ currentTask.message }}</span>
+                        <span class="text-sm font-medium">{{ currentTask.progress }}%</span>
+                    </div>
+                    <el-progress
+                        :percentage="currentTask.progress"
+                        :stroke-width="8"
+                        :status="currentTask.status === 'failed' ? 'exception' : undefined"
+                    />
+                </div>
+            </el-card>
+
+            <!-- 结果展示区 -->
+            <el-card v-show="showResults" style="background: var(--bg-secondary); border-color: var(--border-color);">
+                <template #header>
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-white">处理结果</span>
+                        <el-button size="small" @click="resetApp">处理新文件</el-button>
+                    </div>
+                </template>
+
+                <el-tabs v-model="activeTab" class="demo-tabs">
+                    <!-- Tab 1: 数据看板 -->
+                    <el-tab-pane label="数据看板" name="overview">
+                        <div class="tab-content-height pr-4">
+                            <!-- 统计卡片 -->
+                            <div class="grid grid-cols-5 gap-4 mb-6">
+                                <div class="stat-card rounded-lg p-4">
+                                    <div class="text-[var(--text-secondary)] text-sm mb-1">人物数量</div>
+                                    <div class="text-3xl font-bold text-[var(--accent-color)]">
+                                        {{ statistics.totalCharacters }}
+                                    </div>
+                                </div>
+                                <div class="stat-card rounded-lg p-4">
+                                    <div class="text-[var(--text-secondary)] text-sm mb-1">关系数量</div>
+                                    <div class="text-3xl font-bold text-green-500">
+                                        {{ statistics.totalRelationships }}
+                                    </div>
+                                </div>
+                                <div class="stat-card rounded-lg p-4">
+                                    <div class="text-[var(--text-secondary)] text-sm mb-1">时间线事件</div>
+                                    <div class="text-3xl font-bold text-yellow-500">
+                                        {{ statistics.totalEvents }}
+                                    </div>
+                                </div>
+                                <div class="stat-card rounded-lg p-4">
+                                    <div class="text-[var(--text-secondary)] text-sm mb-1">剧本场景</div>
+                                    <div class="text-3xl font-bold text-purple-500">
+                                        {{ statistics.totalScenes }}
+                                    </div>
+                                </div>
+                                <div class="stat-card rounded-lg p-4">
+                                    <div class="text-[var(--text-secondary)] text-sm mb-1">分镜镜头</div>
+                                    <div class="text-3xl font-bold text-pink-500">
+                                        {{ statistics.totalShots }}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 人物关系图 -->
+                            <div class="rounded-lg overflow-hidden" style="background: var(--bg-tertiary); border: 1px solid var(--border-color);">
+                                <div class="px-4 py-3 border-b border-[var(--border-color)]">
+                                    <h3 class="font-semibold text-white">人物关系图谱</h3>
+                                </div>
+                                <div id="relationship-graph" ref="graphContainer"></div>
+                            </div>
+                        </div>
+                    </el-tab-pane>
+
+                    <!-- Tab 2: 剧本模式 -->
+                    <el-tab-pane label="剧本模式" name="script">
+                        <div class="tab-content-height pr-4">
+                            <div class="space-y-6">
+                                <div v-for="scene in scriptScenes" :key="scene.id"
+                                     class="scene-card rounded-lg overflow-hidden transition-all duration-300"
+                                     style="background: var(--bg-tertiary); border: 1px solid var(--border-color);">
+                                    <!-- 场景头 -->
+                                    <div class="scene-header px-4 py-3">
+                                        <div class="flex items-center gap-3">
+                                            <el-tag size="small" type="info">Scene {{ scene.id }}</el-tag>
+                                            <span class="font-medium text-white">{{ scene.time }} - {{ scene.location }}</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- 场景内容 -->
+                                    <div class="p-4">
+                                        <!-- 场景描述 -->
+                                        <p class="text-[var(--text-secondary)] mb-4">{{ scene.description }}</p>
+
+                                        <!-- 动作 -->
+                                        <div v-if="scene.actions && scene.actions.length" class="mb-4 space-y-2">
+                                            <div v-for="(action, idx) in scene.actions" :key="idx"
+                                                 class="action-text text-[var(--text-primary)]">
+                                                {{ action }}
+                                            </div>
+                                        </div>
+
+                                        <!-- 对白 -->
+                                        <div v-if="scene.dialogues && scene.dialogues.length" class="space-y-3">
+                                            <div v-for="(dialogue, idx) in scene.dialogues" :key="idx"
+                                                 class="dialogue-item">
+                                                <div class="flex items-center gap-2 mb-1">
+                                                    <el-tag size="small" type="warning">{{ dialogue.character_name }}</el-tag>
+                                                    <span v-if="dialogue.emotion" class="text-xs text-[var(--text-secondary)]">
+                                                        ({{ dialogue.emotion }})
+                                                    </span>
+                                                </div>
+                                                <div class="dialogue-bubble text-[var(--text-primary)]">
+                                                    {{ dialogue.content }}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-tab-pane>
+
+                    <!-- Tab 3: 分镜墙 -->
+                    <el-tab-pane label="分镜墙" name="storyboard">
+                        <div class="tab-content-height pr-4">
+                            <!-- Grid 布局 -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                <div v-for="shot in storyboardShots" :key="shot.id"
+                                     class="shot-card rounded-lg p-4 transition-all duration-300 cursor-pointer">
+                                    <!-- 镜头编号和类型 -->
+                                    <div class="flex items-center justify-between mb-3">
+                                        <el-tag size="small" type="danger">Shot #{{ shot.shot_number }}</el-tag>
+                                        <el-tag size="small" :type="getShotTypeTag(shot.shot_type)">{{ shot.shot_type }}</el-tag>
+                                    </div>
+
+                                    <!-- 画面描述 -->
+                                    <p class="text-[var(--text-primary)] text-sm mb-3 line-clamp-3">
+                                        {{ shot.description }}
+                                    </p>
+
+                                    <!-- 运镜方向 -->
+                                    <div class="flex items-center gap-2 mb-2 text-xs">
+                                        <span class="text-[var(--text-secondary)]">运镜:</span>
+                                        <el-tag size="small" effect="plain">{{ shot.camera_direction }}</el-tag>
+                                    </div>
+
+                                    <!-- 时长 -->
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-[var(--text-secondary)]">
+                                            时长：{{ shot.duration_seconds }}s
+                                        </span>
+                                        <span v-if="shot.characters_in_shot && shot.characters_in_shot.length"
+                                              class="text-xs text-[var(--text-secondary)]">
+                                            角色：{{ shot.characters_in_shot.join(', ') }}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </el-tab-pane>
+                </el-tabs>
+            </el-card>
+        </main>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
+
+        const API_BASE = 'http://127.0.0.1:8000';
+
+        createApp({
+            setup() {
+                // 状态
+                const apiHealth = ref(true);
+                const isDragover = ref(false);
+                const uploadFile = ref(null);
+                const isUploading = ref(false);
+                const currentTask = ref(null);
+                const showResults = ref(false);
+                const activeTab = ref('overview');
+                const graphContainer = ref(null);
+
+                // 结果数据
+                const statistics = reactive({
+                    totalCharacters: 0,
+                    totalRelationships: 0,
+                    totalEvents: 0,
+                    totalScenes: 0,
+                    totalShots: 0
+                });
+
+                const characters = ref([]);
+                const relationships = ref([]);
+                const scriptScenes = ref([]);
+                const storyboardShots = ref([]);
+
+                let pollInterval = null;
+                let echartsInstance = null;
+
+                // 检查 API 健康
+                const checkApiHealth = async () => {
+                    try {
+                        await axios.get(`${API_BASE}/api/v1/health`);
+                        apiHealth.value = true;
+                    } catch {
+                        apiHealth.value = false;
+                    }
+                };
+
+                // 文件选择处理
+                const handleFileSelect = (event) => {
+                    const file = event.target.files[0];
+                    if (file && file.name.endsWith('.txt')) {
+                        uploadFile.value = file;
+                    } else {
+                        ElementPlus.ElMessage.error('请选择 .txt 格式的文件');
+                    }
+                };
+
+                // 拖拽处理
+                const handleDrop = (event) => {
+                    isDragover.value = false;
+                    const file = event.dataTransfer.files[0];
+                    if (file && file.name.endsWith('.txt')) {
+                        uploadFile.value = file;
+                    } else {
+                        ElementPlus.ElMessage.error('请选择 .txt 格式的文件');
+                    }
+                };
+
+                // 上传处理
+                const handleUpload = async () => {
+                    if (!uploadFile.value) {
+                        ElementPlus.ElMessage.warning('请先选择文件');
+                        return;
+                    }
+
+                    isUploading.value = true;
+                    const formData = new FormData();
+                    formData.append('file', uploadFile.value);
+
+                    try {
+                        const response = await axios.post(
+                            `${API_BASE}/api/v1/novel/upload`,
+                            formData,
+                            {
+                                headers: {
+                                    'Content-Type': 'multipart/form-data'
+                                }
+                            }
+                        );
+
+                        currentTask.value = {
+                            task_id: response.data.task_id,
+                            status: response.data.status,
+                            progress: 0,
+                            message: response.data.message
+                        };
+
+                        ElementPlus.ElMessage.success('文件上传成功，开始处理...');
+
+                        // 开始轮询
+                        startPolling(response.data.task_id);
+
+                    } catch (error) {
+                        ElementPlus.ElMessage.error(`上传失败：${error.response?.data?.detail || error.message}`);
+                    } finally {
+                        isUploading.value = false;
+                    }
+                };
+
+                // 轮询任务状态
+                const startPolling = (taskId) => {
+                    pollInterval = setInterval(async () => {
+                        try {
+                            const response = await axios.get(`${API_BASE}/api/v1/tasks/${taskId}`);
+                            const task = response.data;
+
+                            currentTask.value = {
+                                ...currentTask.value,
+                                status: task.status,
+                                progress: task.progress,
+                                message: task.message
+                            };
+
+                            if (task.status === 'COMPLETED') {
+                                clearInterval(pollInterval);
+                                pollInterval = null;
+                                await fetchResult(taskId);
+                            } else if (task.status === 'FAILED') {
+                                clearInterval(pollInterval);
+                                pollInterval = null;
+                                ElementPlus.ElMessage.error(`处理失败：${task.error_message}`);
+                            }
+
+                        } catch (error) {
+                            console.error('轮询失败:', error);
+                        }
+                    }, 2000);
+                };
+
+                // 获取结果
+                const fetchResult = async (taskId) => {
+                    try {
+                        const response = await axios.get(`${API_BASE}/api/v1/tasks/${taskId}/result`);
+                        const result = response.data.result;
+
+                        // 更新统计数据
+                        const stats = result.statistics || {};
+                        statistics.totalCharacters = stats.total_characters || 0;
+                        statistics.totalRelationships = stats.total_relationships || 0;
+                        statistics.totalEvents = stats.total_events || 0;
+                        statistics.totalScenes = stats.total_scenes || 0;
+                        statistics.totalShots = stats.total_shots || 0;
+
+                        // 更新数据
+                        characters.value = result.characters || [];
+                        relationships.value = result.relationships || [];
+                        scriptScenes.value = result.script_scenes || [];
+                        storyboardShots.value = result.storyboard_shots || [];
+
+                        // 显示结果
+                        showResults.value = true;
+                        ElementPlus.ElMessage.success('处理完成!');
+
+                        // 渲染关系图
+                        await nextTick();
+                        renderRelationshipGraph();
+
+                    } catch (error) {
+                        ElementPlus.ElMessage.error(`获取结果失败：${error.message}`);
+                    }
+                };
+
+                // 渲染人物关系图
+                const renderRelationshipGraph = () => {
+                    if (!graphContainer.value) return;
+
+                    // 销毁旧实例
+                    if (echartsInstance) {
+                        echartsInstance.dispose();
+                    }
+
+                    // 创建新实例
+                    echartsInstance = echarts.init(graphContainer.value, 'dark');
+
+                    // 构建节点和边
+                    const nodes = characters.value.map(char => ({
+                        id: char.id,
+                        name: char.name,
+                        symbolSize: 30 + (char.traits?.length || 0) * 5,
+                        value: char.description || '',
+                        category: 0,
+                        itemStyle: {
+                            color: getCharacterColor(char.id)
+                        }
+                    }));
+
+                    const edges = relationships.value.map(rel => ({
+                        source: rel.character_id_1,
+                        target: rel.character_id_2,
+                        value: rel.type,
+                        label: {
+                            show: true,
+                            formatter: rel.type,
+                            fontSize: 10,
+                            color: '#8b949e'
+                        },
+                        lineStyle: {
+                            width: rel.strength || 1,
+                            curveness: 0.3
+                        }
+                    }));
+
+                    const option = {
+                        backgroundColor: 'transparent',
+                        tooltip: {
+                            formatter: (params) => {
+                                if (params.dataType === 'node') {
+                                    return `<strong>${params.name}</strong><br/>${params.value || ''}`;
+                                }
+                                return `${params.source} - ${params.value} - ${params.target}`;
+                            }
+                        },
+                        legend: [{
+                            data: ['人物'],
+                            textStyle: { color: '#c9d1d9' }
+                        }],
+                        series: [{
+                            type: 'graph',
+                            layout: 'force',
+                            data: nodes,
+                            links: edges,
+                            roam: true,
+                            label: {
+                                show: true,
+                                position: 'right',
+                                color: '#c9d1d9'
+                            },
+                            force: {
+                                repulsion: 300,
+                                edgeLength: [100, 200],
+                                gravity: 0.1
+                            },
+                            lineStyle: {
+                                color: '#58a6ff',
+                                opacity: 0.7
+                            }
+                        }]
+                    };
+
+                    echartsInstance.setOption(option);
+
+                    // 响应式调整
+                    window.addEventListener('resize', () => {
+                        echartsInstance.resize();
+                    });
+                };
+
+                // 根据角色 ID 生成颜色
+                const getCharacterColor = (id) => {
+                    const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#a371f7', '#38bdf8', '#4ade80', '#fbbf24'];
+                    let hash = 0;
+                    for (let i = 0; i < id.length; i++) {
+                        hash = ((hash << 5) - hash) + id.charCodeAt(i);
+                        hash |= 0;
+                    }
+                    return colors[Math.abs(hash) % colors.length];
+                };
+
+                // 获取镜头类型标签
+                const getShotTypeTag = (type) => {
+                    const typeMap = {
+                        '特写': 'danger',
+                        '近景': 'warning',
+                        '中景': 'success',
+                        '全景': 'primary',
+                        '远景': 'info',
+                        '俯视': 'danger',
+                        '仰视': 'warning'
+                    };
+                    return typeMap[type] || 'info';
+                };
+
+                // 重置应用
+                const resetApp = () => {
+                    uploadFile.value = null;
+                    currentTask.value = null;
+                    showResults.value = false;
+                    characters.value = [];
+                    relationships.value = [];
+                    scriptScenes.value = [];
+                    storyboardShots.value = [];
+                    activeTab.value = 'overview';
+                };
+
+                // 生命周期
+                onMounted(() => {
+                    checkApiHealth();
+                    // 定期检查 API 健康
+                    setInterval(checkApiHealth, 30000);
+                });
+
+                return {
+                    apiHealth,
+                    isDragover,
+                    uploadFile,
+                    isUploading,
+                    currentTask,
+                    showResults,
+                    activeTab,
+                    graphContainer,
+                    statistics,
+                    characters,
+                    relationships,
+                    scriptScenes,
+                    storyboardShots,
+                    handleFileSelect,
+                    handleDrop,
+                    handleUpload,
+                    getShotTypeTag,
+                    resetApp
+                };
+            }
+        }).use(ElementPlus).mount('#app');
+    </script>
+</body>
+</html>
