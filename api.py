@@ -72,37 +72,42 @@ class ErrorResponse(BaseModel):
 
 # ==================== 任务存储 ====================
 
+import threading
+
 class TaskStore:
     """
     内存任务存储
 
-    线程安全的内存存储，用于保存任务状态和结果。
+    使用线程锁保证线程安全
     生产环境可替换为 Redis 或其他持久化存储。
     """
 
     def __init__(self):
         self._tasks: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()  # 线程锁
 
     def create_task(self, task_id: str) -> Dict[str, Any]:
         """创建新任务"""
-        task = {
-            "task_id": task_id,
-            "status": TaskStatus.PENDING,
-            "progress": 0,
-            "message": "任务已创建，等待处理",
-            "created_at": datetime.now(),
-            "updated_at": datetime.now(),
-            "completed_at": None,
-            "error_message": None,
-            "result": None,
-            "temp_dir": None  # 临时目录路径
-        }
-        self._tasks[task_id] = task
+        with self._lock:
+            task = {
+                "task_id": task_id,
+                "status": TaskStatus.PENDING,
+                "progress": 0,
+                "message": "任务已创建，等待处理",
+                "created_at": datetime.now(),
+                "updated_at": datetime.now(),
+                "completed_at": None,
+                "error_message": None,
+                "result": None,
+                "temp_dir": None  # 临时目录路径
+            }
+            self._tasks[task_id] = task
         return task
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """获取任务信息"""
-        return self._tasks.get(task_id)
+        with self._lock:
+            return self._tasks.get(task_id)
 
     def update_task(
         self,
@@ -112,48 +117,51 @@ class TaskStore:
         message: Optional[str] = None,
         error_message: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """更新任务状态"""
-        task = self._tasks.get(task_id)
-        if not task:
-            return None
+        """更新任务状态（线程安全）"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
 
-        if status is not None:
-            task["status"] = status
-        if progress is not None:
-            task["progress"] = progress
-        if message is not None:
-            task["message"] = message
-        if error_message is not None:
-            task["error_message"] = error_message
+            if status is not None:
+                task["status"] = status
+            if progress is not None:
+                task["progress"] = progress
+            if message is not None:
+                task["message"] = message
+            if error_message is not None:
+                task["error_message"] = error_message
 
-        task["updated_at"] = datetime.now()
+            task["updated_at"] = datetime.now()
 
-        if status == TaskStatus.COMPLETED:
-            task["completed_at"] = datetime.now()
+            if status == TaskStatus.COMPLETED:
+                task["completed_at"] = datetime.now()
 
-        return task
+            return task
 
     def set_result(self, task_id: str, result: Dict[str, Any]) -> bool:
-        """设置任务结果"""
-        task = self._tasks.get(task_id)
-        if not task:
-            return False
+        """设置任务结果（线程安全）"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
 
-        task["result"] = result
-        task["status"] = TaskStatus.COMPLETED
-        task["completed_at"] = datetime.now()
-        task["updated_at"] = datetime.now()
-        return True
+            task["result"] = result
+            task["status"] = TaskStatus.COMPLETED
+            task["completed_at"] = datetime.now()
+            task["updated_at"] = datetime.now()
+            return True
 
     def cleanup_task(self, task_id: str) -> None:
         """清理任务（删除临时文件）"""
-        task = self._tasks.get(task_id)
-        if task and task.get("temp_dir"):
-            temp_dir = task["temp_dir"]
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-        if task_id in self._tasks:
-            del self._tasks[task_id]
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.get("temp_dir"):
+                temp_dir = task["temp_dir"]
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            if task_id in self._tasks:
+                del self._tasks[task_id]
 
 
 # 全局任务存储实例

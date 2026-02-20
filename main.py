@@ -321,6 +321,7 @@ class LongNovelProcessor:
                 "completed_at": end_time.isoformat()
             },
             "statistics": {
+                "total_chapters": len(chunks),
                 "total_characters": len(set(c.id for c in self.all_characters)),
                 "total_relationships": len(self.all_relationships),
                 "total_events": len(self.all_timeline_events),

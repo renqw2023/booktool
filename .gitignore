@@ -1,5 +1,38 @@
-.claude/
+# Python
 __pycache__/
+*.py[cod]
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Checkpoints
+.checkpoint_*.json
+memory_bank_final.json
+
+# Output
+*.log
+output/
+
+# Environment
 .env
+.env.local
