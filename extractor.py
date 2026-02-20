@@ -37,25 +37,60 @@ class MockLLMClient(LLMClient):
 
 
 class OpenAICompatibleClient(LLMClient):
-    """OpenAI 兼容 API 客户端"""
+    """OpenAI 兼容 API 客户端 - 支持原生 JSON Structured Output"""
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None,
+                 model: str = "gpt-4o-mini", use_json_mode: bool = True):
+        """
+        初始化 OpenAI 兼容客户端
+
+        Args:
+            api_key: API 密钥
+            base_url: API 基础 URL
+            model: 模型名称
+            use_json_mode: 是否启用 JSON 结构化输出（response_format=json_object）
+        """
         super().__init__(api_key, base_url)
         self.model = model
+        self.use_json_mode = use_json_mode
 
-    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
-        """调用 OpenAI 兼容 API"""
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7,
+             json_mode: bool = False) -> str:
+        """
+        调用 OpenAI 兼容 API
+
+        Args:
+            messages: 对话消息列表
+            temperature: 温度参数
+            json_mode: 是否强制使用 JSON 模式（覆盖实例变量）
+        """
         try:
             from openai import OpenAI
             client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url if self.base_url else None
             )
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature
-            )
+
+            # 构建请求参数
+            request_kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature
+            }
+
+            # 启用 JSON 模式（原生结构化输出）
+            if self.use_json_mode or json_mode:
+                # 方法 1: 使用 response_format（推荐，适用于支持 JSON Schema 的模型）
+                request_kwargs["response_format"] = {"type": "json_object"}
+
+                # 方法 2: 同时添加系统提示强化 JSON 要求
+                if messages and messages[0].get("role") != "system":
+                    messages = [{
+                        "role": "system",
+                        "content": "You must respond with valid JSON only. No other text, no markdown code blocks."
+                    }] + messages
+
+            response = client.chat.completions.create(**request_kwargs)
             return response.choices[0].message.content
         except ImportError:
             raise ImportError("请安装 openai 包：pip install openai")

@@ -162,8 +162,24 @@ class ScriptGenerator:
         )
 
     def _create_fallback_scene(self, event: TimelineEvent) -> ScriptScene:
-        """当 LLM 解析失败时，创建一个基础场景"""
-        time = self._determine_time_fallback(event)
+        """当 LLM 解析失败时，创建一个基础场景
+
+        注意：即使 fallback 也使用 LLM 来决定时间，避免硬编码逻辑
+        """
+        # 使用 LLM 来决定时间，而非硬编码关键词
+        time_prompt = f"""请从以下文本中判断时间（日/夜/黄昏/黎明等）：
+
+文本：{event.summary} {event.description}
+
+请只返回一个词：日/夜/黄昏/黎明/晨/下午/晚上/深夜/傍晚/清晨/上午/中午
+"""
+        try:
+            time_response = self.llm_client.chat([{"role": "user", "content": time_prompt}], temperature=0.3)
+            time = time_response.strip()[:2]  # 只取前两个字符
+            if time not in ["日", "夜", "黄昏", "黎明", "晨", "下午", "晚上", "深夜", "傍晚", "清晨", "上午", "中午"]:
+                time = "日"
+        except Exception:
+            time = "日"  # 极端情况下的默认值
 
         return ScriptScene(
             id=f"scene_{event.id}",
@@ -175,23 +191,6 @@ class ScriptGenerator:
             dialogues=[],
             character_ids=event.character_ids
         )
-
-    def _determine_time_fallback(self, event: TimelineEvent) -> str:
-        """备用时间判断逻辑（当 LLM 不可用时）"""
-        time_keywords = {
-            "夜": ["夜", "夜晚", "晚上", "深夜", "傍晚", "黄昏", "雨夜"],
-            "日": ["日", "白天", "早晨", "早上", "中午", "下午", "清晨"],
-            "晨": ["晨", "黎明", "破晓", "晨曦"],
-        }
-
-        text = f"{event.summary} {event.description}"
-
-        for time_value, keywords in time_keywords.items():
-            for keyword in keywords:
-                if keyword in text:
-                    return time_value
-
-        return "日"
 
     def _parse_json_response(self, response: str) -> Optional[Dict[str, Any]]:
         """解析 LLM 返回的 JSON 响应"""
