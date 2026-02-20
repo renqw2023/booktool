@@ -37,10 +37,11 @@ class MockLLMClient(LLMClient):
 
 
 class OpenAICompatibleClient(LLMClient):
-    """OpenAI 兼容 API 客户端 - 支持原生 JSON Structured Output"""
+    """OpenAI 兼容 API 客户端 - 支持原生 JSON Structured Output 和自动重试"""
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None,
-                 model: str = "gpt-4o-mini", use_json_mode: bool = True):
+                 model: str = "gpt-4o-mini", use_json_mode: bool = True,
+                 max_retries: int = 3, retry_delay: float = 1.0):
         """
         初始化 OpenAI 兼容客户端
 
@@ -49,51 +50,128 @@ class OpenAICompatibleClient(LLMClient):
             base_url: API 基础 URL
             model: 模型名称
             use_json_mode: 是否启用 JSON 结构化输出（response_format=json_object）
+            max_retries: 最大重试次数
+            retry_delay: 基础重试延迟（秒），实际延迟按指数退避计算
         """
         super().__init__(api_key, base_url)
         self.model = model
         self.use_json_mode = use_json_mode
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7,
              json_mode: bool = False) -> str:
         """
-        调用 OpenAI 兼容 API
+        调用 OpenAI 兼容 API（带自动重试）
 
         Args:
             messages: 对话消息列表
             temperature: 温度参数
             json_mode: 是否强制使用 JSON 模式（覆盖实例变量）
+
+        Retries:
+            使用指数退避策略进行重试：
+            - HTTP 429 (Rate Limit): 重试
+            - HTTP 5xx (Server Error): 重试
+            - Connection Error: 重试
+            - HTTP 4xx (Client Error): 不重试
         """
-        try:
-            from openai import OpenAI
-            client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url if self.base_url else None
-            )
+        import time
+        import random
 
-            # 构建请求参数
-            request_kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": temperature
-            }
+        last_exception = None
 
-            # 启用 JSON 模式（原生结构化输出）
-            if self.use_json_mode or json_mode:
-                # 方法 1: 使用 response_format（推荐，适用于支持 JSON Schema 的模型）
-                request_kwargs["response_format"] = {"type": "json_object"}
+        for attempt in range(self.max_retries + 1):
+            try:
+                from openai import OpenAI, APIStatusError, APIConnectionError
+                client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url if self.base_url else None
+                )
 
-                # 方法 2: 同时添加系统提示强化 JSON 要求
-                if messages and messages[0].get("role") != "system":
-                    messages = [{
-                        "role": "system",
-                        "content": "You must respond with valid JSON only. No other text, no markdown code blocks."
-                    }] + messages
+                # 构建请求参数
+                request_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature
+                }
 
-            response = client.chat.completions.create(**request_kwargs)
-            return response.choices[0].message.content
-        except ImportError:
-            raise ImportError("请安装 openai 包：pip install openai")
+                # 启用 JSON 模式（原生结构化输出）
+                if self.use_json_mode or json_mode:
+                    # 方法 1: 使用 response_format（推荐，适用于支持 JSON Schema 的模型）
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                    # 方法 2: 同时添加系统提示强化 JSON 要求
+                    if messages and messages[0].get("role") != "system":
+                        messages = [{
+                            "role": "system",
+                            "content": "You must respond with valid JSON only. No other text, no markdown code blocks."
+                        }] + messages
+
+                response = client.chat.completions.create(**request_kwargs)
+                return response.choices[0].message.content
+
+            except ImportError:
+                raise ImportError("请安装 openai 包：pip install openai")
+
+            except APIStatusError as e:
+                last_exception = e
+                status_code = e.status_code
+
+                # 429 Rate Limit - 需要重试
+                if status_code == 429:
+                    if attempt < self.max_retries:
+                        # 指数退避 + 抖动
+                        delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                        print(f"[RETRY] 遇到限流 (429)，{delay:.1f}秒后重试... (尝试 {attempt + 1}/{self.max_retries})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"[ERROR] 达到最大重试次数，限流错误仍未解决")
+                        raise
+
+                # 5xx Server Error - 需要重试
+                elif 500 <= status_code < 600:
+                    if attempt < self.max_retries:
+                        delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                        print(f"[RETRY] 服务器错误 ({status_code})，{delay:.1f}秒后重试... (尝试 {attempt + 1}/{self.max_retries})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"[ERROR] 达到最大重试次数，服务器错误仍未解决")
+                        raise
+
+                # 4xx Client Error - 不重试，直接抛出
+                elif 400 <= status_code < 500:
+                    print(f"[ERROR] 客户端错误 ({status_code}): {e}")
+                    raise
+
+            except APIConnectionError as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"[RETRY] 连接错误，{delay:.1f}秒后重试... (尝试 {attempt + 1}/{self.max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"[ERROR] 达到最大重试次数，连接错误仍未解决")
+                    raise
+
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"[RETRY] 未知错误 ({type(e).__name__})，{delay:.1f}秒后重试... (尝试 {attempt + 1}/{self.max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"[ERROR] 达到最大重试次数，错误仍未解决")
+                    raise
+
+        # 理论上不会到达这里，但为了完整性
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("重试循环异常退出")
 
 
 # ==================== Prompt 模板 ====================

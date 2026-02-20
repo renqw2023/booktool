@@ -27,6 +27,7 @@ from extractor import (
 from script_generator import ScriptGenerator
 from storyboard_generator import StoryboardGenerator
 from chunking_engine import NovelReader, MemoryBank, ChunkingPipeline, TextChunk
+from vector_store import VectorMemoryBank
 
 
 class NovelProcessor:
@@ -96,7 +97,8 @@ class LongNovelProcessor:
                  max_chunk_size: int = 8000,
                  enable_memory_merge: bool = True,
                  enable_checkpoint: bool = True,
-                 checkpoint_interval: int = 5):
+                 checkpoint_interval: int = 5,
+                 use_vector_memory: bool = True):
         """
         初始化长篇小说处理器
 
@@ -106,6 +108,7 @@ class LongNovelProcessor:
             enable_memory_merge: 是否启用记忆合并
             enable_checkpoint: 是否启用检查点保存
             checkpoint_interval: 检查点保存间隔（每 N 个章节保存一次）
+            use_vector_memory: 是否使用向量化记忆银行（解决记忆膨胀问题）
         """
         self.llm_client = llm_client or OpenAICompatibleClient(
             api_key=os.environ.get("LLM_API_KEY"),
@@ -116,16 +119,20 @@ class LongNovelProcessor:
         self.enable_memory_merge = enable_memory_merge
         self.enable_checkpoint = enable_checkpoint
         self.checkpoint_interval = checkpoint_interval
+        self.use_vector_memory = use_vector_memory
 
         # 初始化分块流水线
         self.chunking_pipeline = ChunkingPipeline(max_chunk_size=max_chunk_size)
 
-        # 初始化提取器和生成器（使用带记忆的 extractor）
+        # 初始化记忆银行（使用向量化版本）
+        self.memory_bank = VectorMemoryBank() if use_vector_memory else MemoryBank()
+
+        # 初始化提取器和生成器（传入记忆银行）
         self.character_extractor = CharacterExtractor(self.llm_client)
         self.relationship_extractor = RelationshipExtractor(self.llm_client)
         self.timeline_extractor = TimelineExtractor(self.llm_client)
-        self.script_generator = ScriptGenerator(self.llm_client)
-        self.storyboard_generator = StoryboardGenerator(self.llm_client)
+        self.script_generator = ScriptGenerator(self.llm_client, self.memory_bank)
+        self.storyboard_generator = StoryboardGenerator(self.llm_client, self.memory_bank)
 
         # 结果存储
         self.all_characters: List[Character] = []
@@ -167,28 +174,44 @@ class LongNovelProcessor:
     def _merge_characters(self, new_characters: List[Character], chapter_num: int) -> None:
         """将新提取的人物合并到记忆银行"""
         for char in new_characters:
-            from chunking_engine import CharacterMemory
+            if self.use_vector_memory:
+                # 使用向量化记忆银行
+                self.memory_bank.add_character(
+                    character_id=char.id,
+                    name=char.name,
+                    traits=char.traits,
+                    goals=char.goals,
+                    descriptions=[char.description] if char.description else [],
+                    appearances=[char.appearance] if char.appearance else [],
+                    metadata={"chapter": chapter_num}
+                )
+            else:
+                # 使用传统记忆银行
+                from chunking_engine import CharacterMemory
 
-            memory = CharacterMemory(
-                character_id=char.id,
-                name=char.name,
-                descriptions=[char.description] if char.description else [],
-                traits=char.traits,
-                goals=char.goals,
-                background_fragments=[char.background] if char.background else [],
-                appearance_fragments=[char.appearance] if char.appearance else [],
-                first_appearance_chapter=chapter_num,
-                last_appearance_chapter=chapter_num,
-                mention_count=1
-            )
-            self.chunking_pipeline.memory_bank.add_character_memory(memory)
+                memory = CharacterMemory(
+                    character_id=char.id,
+                    name=char.name,
+                    descriptions=[char.description] if char.description else [],
+                    traits=char.traits,
+                    goals=char.goals,
+                    background_fragments=[char.background] if char.background else [],
+                    appearance_fragments=[char.appearance] if char.appearance else [],
+                    first_appearance_chapter=chapter_num,
+                    last_appearance_chapter=chapter_num,
+                    mention_count=1
+                )
+                self.chunking_pipeline.memory_bank.add_character_memory(memory)
 
     def _merge_relationships(self, new_relationships: List[Relationship]) -> None:
         """合并关系"""
         for rel in new_relationships:
             rel_desc = f"{rel.character_id_1} 与 {rel.character_id_2}: {rel.type}"
-            if rel_desc not in self.chunking_pipeline.memory_bank.global_context["relationships"]:
-                self.chunking_pipeline.memory_bank.global_context["relationships"].append(rel_desc)
+            if self.use_vector_memory:
+                self.memory_bank.add_relationship(rel_desc)
+            else:
+                if rel_desc not in self.chunking_pipeline.memory_bank.global_context["relationships"]:
+                    self.chunking_pipeline.memory_bank.global_context["relationships"].append(rel_desc)
 
     def process_chunk(self, chunk: TextChunk) -> Dict[str, Any]:
         """处理单个章节"""
@@ -209,15 +232,28 @@ class LongNovelProcessor:
             self._merge_characters(extracted["characters"], chunk.chapter_number)
             self._merge_relationships(extracted["relationships"])
 
-        # 生成剧本场景
-        print("  → 生成剧本场景...")
-        script_scenes = self.script_generator.generate(extracted["timeline_events"])
+        # 构建记忆上下文（用于生成剧本和分镜）
+        memory_context = ""
+        if self.use_vector_memory:
+            memory_context = self.memory_bank.to_context_prompt(chunk.content)
+        else:
+            memory_context = self.chunking_pipeline.memory_bank.to_context_prompt()
 
-        # 生成分镜镜头
+        # 生成剧本场景（注入记忆上下文）
+        print("  → 生成剧本场景...")
+        script_scenes = self.script_generator.generate(
+            extracted["timeline_events"],
+            memory_context=memory_context
+        )
+
+        # 生成分镜镜头（注入记忆上下文）
         print("  → 生成分镜镜头...")
         storyboard_shots = []
         for scene in script_scenes:
-            shots = self.storyboard_generator.generate(scene)
+            shots = self.storyboard_generator.generate(
+                scene,
+                memory_context=memory_context
+            )
             storyboard_shots.extend(shots)
 
         # 累积结果

@@ -36,27 +36,71 @@ class MockLLMClient(LLMClient):
 
 
 class OpenAICompatibleClient(LLMClient):
-    """OpenAI 兼容 API 客户端"""
+    """OpenAI 兼容 API 客户端（带重试机制）"""
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None,
+                 model: str = "gpt-4o-mini", max_retries: int = 3, retry_delay: float = 1.0):
         super().__init__(api_key, base_url)
         self.model = model
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
 
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
-        try:
-            from openai import OpenAI
-            client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url if self.base_url else None
-            )
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature
-            )
-            return response.choices[0].message.content
-        except ImportError:
-            raise ImportError("请安装 openai 包：pip install openai")
+        """调用 OpenAI 兼容 API（带自动重试）"""
+        import time
+        import random
+
+        last_exception = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                from openai import OpenAI, APIStatusError, APIConnectionError
+                client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url if self.base_url else None
+                )
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature
+                )
+                return response.choices[0].message.content
+
+            except ImportError:
+                raise ImportError("请安装 openai 包：pip install openai")
+
+            except APIStatusError as e:
+                last_exception = e
+                status_code = e.status_code
+                if status_code in (429, 500, 502, 503, 504):
+                    if attempt < self.max_retries:
+                        delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                        print(f"[RETRY] API 错误 ({status_code})，{delay:.1f}秒后重试...")
+                        time.sleep(delay)
+                        continue
+                raise
+
+            except APIConnectionError as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"[RETRY] 连接错误，{delay:.1f}秒后重试...")
+                    time.sleep(delay)
+                    continue
+                raise
+
+            except Exception as e:
+                last_exception = e
+                if attempt < self.max_retries:
+                    delay = self.retry_delay * (2 ** attempt) + random.uniform(0, 1)
+                    print(f"[RETRY] 未知错误，{delay:.1f}秒后重试...")
+                    time.sleep(delay)
+                    continue
+                raise
+
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("重试循环异常退出")
 
 
 # ==================== Prompt 模板 ====================
@@ -107,39 +151,58 @@ SCENE_GENERATION_PROMPT = """你是一个专业的影视剧本改编专家。请
 class ScriptGenerator:
     """剧本生成器 - 使用 LLM 进行智能转化"""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None,
+                 memory_bank: Optional[Any] = None):
         """
         初始化剧本生成器
 
         Args:
             llm_client: LLM 客户端实例，如果为 None 则使用 MockLLMClient
+            memory_bank: 可选的记忆银行，用于注入人物上下文
         """
         self.llm_client = llm_client or MockLLMClient()
+        self.memory_bank = memory_bank  # 支持向量化记忆银行或传统 MemoryBank
 
-    def generate(self, events: List[TimelineEvent]) -> List[ScriptScene]:
-        """从时间线事件生成剧本场景"""
+    def generate(self, events: List[TimelineEvent],
+                 memory_context: Optional[str] = None) -> List[ScriptScene]:
+        """从时间线事件生成剧本场景
+
+        Args:
+            events: 时间线事件列表
+            memory_context: 可选的记忆上下文，用于保持人物连贯性
+        """
         scenes = []
 
         for event in events:
-            scene = self._create_scene_from_event(event)
+            scene = self._create_scene_from_event(event, memory_context)
             if scene:
                 scenes.append(scene)
 
         return scenes
 
-    def _create_scene_from_event(self, event: TimelineEvent) -> ScriptScene:
+    def _create_scene_from_event(self, event: TimelineEvent,
+                                  memory_context: Optional[str] = None) -> ScriptScene:
         """从单个事件创建场景"""
         # 构建人物列表字符串
         characters_str = ", ".join(event.character_ids) if event.character_ids else "未明确"
 
-        prompt = SCENE_GENERATION_PROMPT.format(
+        # 构建 prompt
+        prompt_parts = []
+
+        # 如果有记忆上下文，添加到 prompt 前面
+        if memory_context:
+            prompt_parts.append(f"以下是相关人物的记忆信息，请在生成剧本时参考这些信息来保持人物的一致性：\n{memory_context}\n\n")
+
+        prompt_parts.append(SCENE_GENERATION_PROMPT.format(
             chapter=event.chapter,
             summary=event.summary,
             description=event.description or event.summary,
             location=event.location or "未明确",
             characters=characters_str,
             event_id=event.id
-        )
+        ))
+
+        prompt = "".join(prompt_parts)
         messages = [{"role": "user", "content": prompt}]
 
         response = self.llm_client.chat(messages, temperature=0.8)
